@@ -1,36 +1,67 @@
 import os
 import asyncio
-from flask import Flask, request, redirect
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import requests
+from flask import Flask, request, redirect
+from telegram import Update, Bot
 
 app = Flask(__name__)
 
-# Zugangsdaten aus den Render-Einstellungen (Environment Variables)
+# Umweltvariablen aus Render auslesen
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
-RENDER_URL = os.environ.get("RENDER_URL")  # z.B. https://spotx.onrender.com
+RENDER_URL = os.environ.get("RENDER_URL")  # z.B. https://spotx-cqms.onrender.com
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
 REDIRECT_URI = f"{RENDER_URL}/callback" if RENDER_URL else "http://localhost:10000/callback"
 
-# Globaler Bot-Speicher
-telegram_app = None
+# Telegram Bot instanziieren
+bot = Bot(token=TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
 
-# ----------------- WEB-SERVER (FLASK) -----------------
+# Helper-Funktion zum asynchronen Senden von Nachrichten
+def send_telegram_message(chat_id, text, parse_mode="Markdown"):
+    if not bot:
+        return
+    asyncio.run(bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode))
+
+# ----------------- FLASK & WEBHOOK ROUTEN -----------------
 
 @app.route("/")
 def index():
-    return "Spotx Bot Server läuft!"
+    return "Spotx Bot Server läuft einwandfrei!"
 
+# Webhook-Empfänger für Telegram-Nachrichten
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    if not TELEGRAM_TOKEN or not bot:
+        return "Token fehlt", 500
+        
+    try:
+        data = request.get_json(force=True)
+        update = Update.de_json(data, bot)
+        
+        if update and update.message and update.message.text:
+            text = update.message.text.strip()
+            chat_id = update.message.chat.id
+            
+            if text.startswith("/start") or text.startswith("/login"):
+                login_link = f"{RENDER_URL}/login?user_id={chat_id}"
+                msg = (
+                    f"Hallo! Klicke auf den folgenden Link, um dich sicher bei Spotify einzuloggen:\n\n"
+                    f"🔗 [Hier bei Spotify einloggen]({login_link})"
+                )
+                send_telegram_message(chat_id, msg)
+    except Exception as e:
+        print(f"Fehler im Webhook: {e}")
+            
+    return "OK", 200
+
+# Spotify Login Route
 @app.route("/login")
 def login():
     user_id = request.args.get("user_id")
     if not user_id:
         return "Fehler: Keine Telegram User-ID übergeben.", 400
 
-    # Weiterleitung zum offiziellen Spotify-Login
     scope = "user-read-private user-read-email"
     auth_url = (
         f"https://accounts.spotify.com/authorize?"
@@ -39,15 +70,16 @@ def login():
     )
     return redirect(auth_url)
 
+# Spotify Callback Route
 @app.route("/callback")
 def callback():
     code = request.args.get("code")
-    user_id = request.args.get("state")  # Telegram-ID wird zurückgeliefert
+    user_id = request.args.get("state")
 
     if not code or not user_id:
-        return "Login abgebrochen oder fehlgeschlagen.", 400
+        return "Login abgebrochen oder fehlerhaft.", 400
 
-    # Tokens von Spotify anfordern
+    # Token-Austausch bei Spotify
     token_url = "https://accounts.spotify.com/api/token"
     payload = {
         "grant_type": "authorization_code",
@@ -64,53 +96,29 @@ def callback():
     refresh_token = data.get("refresh_token")
 
     if access_token:
-        # Nachricht mit den Tokens zurück an deinen Telegram-Chat senden
         msg = (
-            "✅ **Erfolgreich eingeloggt!**\n\n"
+            "✅ **Erfolgreich bei Spotify eingeloggt!**\n\n"
             f"🔑 **Access Token:**\n`{access_token}`\n\n"
             f"🔄 **Refresh Token:**\n`{refresh_token}`"
         )
-        
-        if telegram_app and telegram_app.loop:
-            asyncio.run_coroutine_threadsafe(
-                telegram_app.bot.send_message(chat_id=int(user_id), text=msg, parse_mode="Markdown"),
-                telegram_app.loop
-            )
-
-        return "<h1>Erfolgreich eingeloggt! Du kannst diesen Tab jetzt schließen und zu Telegram zurückkehren.</h1>"
+        send_telegram_message(int(user_id), msg)
+        return "<h1>Login erfolgreich! Du kannst diesen Tab jetzt schließen und zu Telegram zurückkehren.</h1>"
     else:
-        return f"Fehler beim Abrufen der Daten: {data.get('error_description', 'Unbekannter Fehler')}", 400
+        error_msg = data.get('error_description', 'Unbekannter Fehler')
+        return f"Fehler beim Abrufen der Tokens: {error_msg}", 400
 
-# ----------------- TELEGRAM BOT -----------------
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.chat.id
-    login_link = f"{RENDER_URL}/login?user_id={user_id}"
-    
-    await update.message.reply_text(
-        f"Hallo! Klicke auf den folgenden Link, um dich sicher bei Spotify anzumelden:\n\n"
-        f"🔗 [Hier bei Spotify einloggen]({login_link})",
-        parse_mode="Markdown"
-    )
-
-# ----------------- SERVER & BOT STARTEN -----------------
+# ----------------- SERVER START & WEBHOOK REGISTRIERUNG -----------------
 
 if __name__ == "__main__":
-    # Telegram Bot initialisieren
-    telegram_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    telegram_app.add_handler(CommandHandler("start", start_command))
-    telegram_app.add_handler(CommandHandler("login", start_command))
+    # Webhook automatisch bei Telegram registrieren
+    if RENDER_URL and TELEGRAM_TOKEN and bot:
+        webhook_url = f"{RENDER_URL}/{TELEGRAM_TOKEN}"
+        try:
+            asyncio.run(bot.set_webhook(url=webhook_url))
+            print(f"Webhook erfolgreich gesetzt auf: {webhook_url}")
+        except Exception as e:
+            print(f"Fehler beim Setzen des Webhooks: {e}")
 
-    # Event-Loop vorbereiten
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    telegram_app.loop = loop
-
-    # Bot-Start auf dem Loop einplanen
-    loop.run_until_complete(telegram_app.initialize())
-    loop.run_until_complete(telegram_app.start())
-    loop.run_until_complete(telegram_app.updater.start_polling())
-
-    # Webserver auf Render-Port starten
+    # Webserver starten
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
