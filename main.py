@@ -7,27 +7,28 @@ app = Flask(__name__)
 # Umweltvariablen aus Render auslesen
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
-RENDER_URL = os.environ.get("RENDER_URL")  # https://spotx1.onrender.com
+RENDER_URL = os.environ.get("RENDER_URL", "https://spotx1.onrender.com")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
-REDIRECT_URI = f"{RENDER_URL}/callback" if RENDER_URL else "http://localhost:10000/callback"
+# Feste HTTPS Redirect URI für Spotify
+REDIRECT_URI = "https://spotx1.onrender.com/callback"
 
 def send_telegram_msg(chat_id, text):
     if not TELEGRAM_TOKEN:
-        print(" [FEHLER] Kein TELEGRAM_TOKEN in den Environment Variables gefunden!")
+        print("[FEHLER] Kein TELEGRAM_TOKEN vorhanden!")
         return
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": text
+        "text": text,
+        "parse_mode": "HTML"
     }
-    
     try:
-        response = requests.post(url, json=payload, timeout=5)
-        print(f" [TELEGRAM API RESPONSE] Status: {response.status_code} | Body: {response.text}")
+        r = requests.post(url, json=payload, timeout=5)
+        print(f"[TELEGRAM API RESPONSE] Status: {r.status_code} | Body: {r.text}")
     except Exception as e:
-        print(f" [FEHLER] Ausnahme beim Senden an Telegram: {e}")
+        print(f"[FEHLER] Fehler beim Senden an Telegram: {e}")
 
 @app.route("/")
 def index():
@@ -35,28 +36,26 @@ def index():
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def telegram_webhook():
-    data = request.get_json(force=True, silent=True)
-    
-    if not data:
-        return "OK", 200
+    try:
+        data = request.get_json(force=True, silent=True)
+        if data and "message" in data and "text" in data["message"]:
+            text = data["message"]["text"].strip()
+            chat_id = data["message"]["chat"]["id"]
 
-    print(f" [TELEGRAM WEBHOOK EMPFANGEN] {data}")
+            if text.startswith("/start") or text.startswith("/login"):
+                login_link = f"{RENDER_URL}/login?user_id={chat_id}"
+                msg = (
+                    "Hallo!\n\n"
+                    f'Klicke auf den folgenden Link, um dich anzumelden:\n'
+                    f'<a href="{login_link}">👉 Hier bei Spotify einloggen</a>'
+                )
+                send_telegram_msg(chat_id, msg)
+            else:
+                msg = f"Empfangen: <code>{text}</code>"
+                send_telegram_msg(chat_id, msg)
 
-    if "message" in data and "text" in data["message"]:
-        text = data["message"]["text"].strip()
-        chat_id = data["message"]["chat"]["id"]
-
-        if text.startswith("/start") or text.startswith("/login"):
-            login_link = f"{RENDER_URL}/login?user_id={chat_id}"
-            reply_text = (
-                f"Hallo!\n\n"
-                f"Klicke auf den folgenden Link, um dich bei Spotify anzumelden:\n"
-                f"{login_link}"
-            )
-            send_telegram_msg(chat_id, reply_text)
-        else:
-            reply_text = f"Empfangen: {text}"
-            send_telegram_msg(chat_id, reply_text)
+    except Exception as e:
+        print(f"[FEHLER im Webhook] {e}")
 
     return "OK", 200
 
@@ -99,14 +98,14 @@ def callback():
 
     if access_token:
         msg = (
-            "Erfolgreich eingeloggt!\n\n"
-            f"Access Token:\n{access_token}\n\n"
-            f"Refresh Token:\n{refresh_token}"
+            "✅ <b>Erfolgreich bei Spotify eingeloggt!</b>\n\n"
+            f"🔑 <b>Access Token:</b>\n<code>{access_token}</code>\n\n"
+            f"🔄 <b>Refresh Token:</b>\n<code>{refresh_token}</code>"
         )
         send_telegram_msg(int(user_id), msg)
-        return "<h1>Login erfolgreich! Du kannst das Fenster jetzt schließen.</h1>"
+        return "<h1>Login erfolgreich! Du kannst dieses Fenster jetzt schließen und zu Telegram zurückkehren.</h1>"
     else:
-        return f"Fehler: {data.get('error_description', 'Unbekannter Fehler')}", 400
+        return f"Fehler von Spotify: {data.get('error_description', 'Unbekannter Fehler')}", 400
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
