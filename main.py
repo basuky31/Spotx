@@ -40,6 +40,7 @@ def telegram_webhook():
             text = data["message"]["text"].strip()
             chat_id = data["message"]["chat"]["id"]
 
+            # Wenn /start oder /login gesendet wird -> OAuth Link schicken
             if text.startswith("/start") or text.startswith("/login"):
                 login_link = f"{RENDER_URL}/login?user_id={chat_id}"
                 msg = (
@@ -47,6 +48,12 @@ def telegram_webhook():
                     f"🔗 [Bei Spotify einloggen]({login_link})"
                 )
                 send_telegram_msg(chat_id, msg)
+            
+            # Falls du stattdessen den sp_dc Cookie als Text schickst:
+            else:
+                msg = f"✅ **Cookie empfangen!**\n\nDein `sp_dc` Cookie wurde gespeichert:\n`{text}`"
+                send_telegram_msg(chat_id, msg)
+
     except Exception as e:
         print("Fehler im Webhook:", e)
 
