@@ -1,57 +1,53 @@
 import os
-import asyncio
 import requests
 from flask import Flask, request, redirect
-from telegram import Update, Bot
 
 app = Flask(__name__)
 
-# Umweltvariablen aus Render auslesen
+# Umweltvariablen aus Render
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
-RENDER_URL = os.environ.get("RENDER_URL")  # z.B. https://spotx-cqms.onrender.com
+RENDER_URL = os.environ.get("RENDER_URL")  # https://spotx1.onrender.com
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
 REDIRECT_URI = f"{RENDER_URL}/callback" if RENDER_URL else "http://localhost:10000/callback"
 
-# Telegram Bot instanziieren
-bot = Bot(token=TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
-
-# Helper-Funktion zum asynchronen Senden von Nachrichten
-def send_telegram_message(chat_id, text, parse_mode="Markdown"):
-    if not bot:
+def send_telegram_msg(chat_id, text):
+    if not TELEGRAM_TOKEN:
         return
-    asyncio.run(bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode))
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"Fehler beim Senden: {e}")
 
-# ----------------- FLASK & WEBHOOK ROUTEN -----------------
+# ----------------- ROUTEN -----------------
 
 @app.route("/")
 def index():
-    return "Spotx Bot Server läuft einwandfrei!"
+    return "Spotx Bot Server läuft!"
 
-# Webhook-Empfänger für Telegram-Nachrichten
+# Empfänger für Telegram Webhook
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def telegram_webhook():
-    if not TELEGRAM_TOKEN or not bot:
-        return "Token fehlt", 500
+    data = request.get_json(force=True)
+    
+    if "message" in data and "text" in data["message"]:
+        text = data["message"]["text"].strip()
+        chat_id = data["message"]["chat"]["id"]
         
-    try:
-        data = request.get_json(force=True)
-        update = Update.de_json(data, bot)
-        
-        if update and update.message and update.message.text:
-            text = update.message.text.strip()
-            chat_id = update.message.chat.id
-            
-            if text.startswith("/start") or text.startswith("/login"):
-                login_link = f"{RENDER_URL}/login?user_id={chat_id}"
-                msg = (
-                    f"Hallo! Klicke auf den folgenden Link, um dich sicher bei Spotify einzuloggen:\n\n"
-                    f"🔗 [Hier bei Spotify einloggen]({login_link})"
-                )
-                send_telegram_message(chat_id, msg)
-    except Exception as e:
-        print(f"Fehler im Webhook: {e}")
+        if text.startswith("/start") or text.startswith("/login"):
+            login_link = f"{RENDER_URL}/login?user_id={chat_id}"
+            msg = (
+                f"Hallo! Klicke auf den folgenden Link, um dich bei Spotify anzumelden:\n\n"
+                f"🔗 [Bei Spotify einloggen]({login_link})"
+            )
+            send_telegram_msg(chat_id, msg)
             
     return "OK", 200
 
@@ -60,7 +56,7 @@ def telegram_webhook():
 def login():
     user_id = request.args.get("user_id")
     if not user_id:
-        return "Fehler: Keine Telegram User-ID übergeben.", 400
+        return "Fehler: Keine User-ID übergeben.", 400
 
     scope = "user-read-private user-read-email"
     auth_url = (
@@ -77,9 +73,8 @@ def callback():
     user_id = request.args.get("state")
 
     if not code or not user_id:
-        return "Login abgebrochen oder fehlerhaft.", 400
+        return "Login fehlgeschlagen.", 400
 
-    # Token-Austausch bei Spotify
     token_url = "https://accounts.spotify.com/api/token"
     payload = {
         "grant_type": "authorization_code",
@@ -97,28 +92,15 @@ def callback():
 
     if access_token:
         msg = (
-            "✅ **Erfolgreich bei Spotify eingeloggt!**\n\n"
+            "✅ **Erfolgreich eingeloggt!**\n\n"
             f"🔑 **Access Token:**\n`{access_token}`\n\n"
             f"🔄 **Refresh Token:**\n`{refresh_token}`"
         )
-        send_telegram_message(int(user_id), msg)
-        return "<h1>Login erfolgreich! Du kannst diesen Tab jetzt schließen und zu Telegram zurückkehren.</h1>"
+        send_telegram_msg(int(user_id), msg)
+        return "<h1>Login erfolgreich! Du kannst das Fenster jetzt schließen.</h1>"
     else:
-        error_msg = data.get('error_description', 'Unbekannter Fehler')
-        return f"Fehler beim Abrufen der Tokens: {error_msg}", 400
-
-# ----------------- SERVER START & WEBHOOK REGISTRIERUNG -----------------
+        return f"Fehler: {data.get('error_description', 'Unbekannter Fehler')}", 400
 
 if __name__ == "__main__":
-    # Webhook automatisch bei Telegram registrieren
-    if RENDER_URL and TELEGRAM_TOKEN and bot:
-        webhook_url = f"{RENDER_URL}/{TELEGRAM_TOKEN}"
-        try:
-            asyncio.run(bot.set_webhook(url=webhook_url))
-            print(f"Webhook erfolgreich gesetzt auf: {webhook_url}")
-        except Exception as e:
-            print(f"Fehler beim Setzen des Webhooks: {e}")
-
-    # Webserver starten
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
