@@ -4,7 +4,7 @@ from flask import Flask, request, redirect
 
 app = Flask(__name__)
 
-# Umweltvariablen aus Render
+# Umweltvariablen aus Render auslesen
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
 RENDER_URL = os.environ.get("RENDER_URL")  # https://spotx1.onrender.com
@@ -14,48 +14,49 @@ REDIRECT_URI = f"{RENDER_URL}/callback" if RENDER_URL else "http://localhost:100
 
 def send_telegram_msg(chat_id, text):
     if not TELEGRAM_TOKEN:
-        print("Fehler: kein TELEGRAM_TOKEN")
+        print(" [FEHLER] Kein TELEGRAM_TOKEN in den Environment Variables gefunden!")
         return
+    
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown"
+        "text": text
     }
+    
     try:
-        r = requests.post(url, json=payload)
-        print("Antwort von Telegram API:", r.status_code, r.text)
+        response = requests.post(url, json=payload, timeout=5)
+        print(f" [TELEGRAM API RESPONSE] Status: {response.status_code} | Body: {response.text}")
     except Exception as e:
-        print("Fehler beim Senden an Telegram:", e)
+        print(f" [FEHLER] Ausnahme beim Senden an Telegram: {e}")
 
 @app.route("/")
 def index():
-    return "Spotx Bot Server läuft!"
+    return "Spotx Bot Server läuft einwandfrei!", 200
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def telegram_webhook():
-    try:
-        data = request.get_json(force=True, silent=True)
-        if data and "message" in data and "text" in data["message"]:
-            text = data["message"]["text"].strip()
-            chat_id = data["message"]["chat"]["id"]
+    data = request.get_json(force=True, silent=True)
+    
+    if not data:
+        return "OK", 200
 
-            # Wenn /start oder /login gesendet wird -> OAuth Link schicken
-            if text.startswith("/start") or text.startswith("/login"):
-                login_link = f"{RENDER_URL}/login?user_id={chat_id}"
-                msg = (
-                    f"Hallo! Klicke auf den folgenden Link, um dich bei Spotify anzumelden:\n\n"
-                    f"🔗 [Bei Spotify einloggen]({login_link})"
-                )
-                send_telegram_msg(chat_id, msg)
-            
-            # Falls du stattdessen den sp_dc Cookie als Text schickst:
-            else:
-                msg = f"✅ **Cookie empfangen!**\n\nDein `sp_dc` Cookie wurde gespeichert:\n`{text}`"
-                send_telegram_msg(chat_id, msg)
+    print(f" [TELEGRAM WEBHOOK EMPFANGEN] {data}")
 
-    except Exception as e:
-        print("Fehler im Webhook:", e)
+    if "message" in data and "text" in data["message"]:
+        text = data["message"]["text"].strip()
+        chat_id = data["message"]["chat"]["id"]
+
+        if text.startswith("/start") or text.startswith("/login"):
+            login_link = f"{RENDER_URL}/login?user_id={chat_id}"
+            reply_text = (
+                f"Hallo!\n\n"
+                f"Klicke auf den folgenden Link, um dich bei Spotify anzumelden:\n"
+                f"{login_link}"
+            )
+            send_telegram_msg(chat_id, reply_text)
+        else:
+            reply_text = f"Empfangen: {text}"
+            send_telegram_msg(chat_id, reply_text)
 
     return "OK", 200
 
@@ -98,9 +99,9 @@ def callback():
 
     if access_token:
         msg = (
-            "✅ **Erfolgreich eingeloggt!**\n\n"
-            f"🔑 **Access Token:**\n`{access_token}`\n\n"
-            f"🔄 **Refresh Token:**\n`{refresh_token}`"
+            "Erfolgreich eingeloggt!\n\n"
+            f"Access Token:\n{access_token}\n\n"
+            f"Refresh Token:\n{refresh_token}"
         )
         send_telegram_msg(int(user_id), msg)
         return "<h1>Login erfolgreich! Du kannst das Fenster jetzt schließen.</h1>"
