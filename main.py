@@ -14,6 +14,7 @@ REDIRECT_URI = f"{RENDER_URL}/callback" if RENDER_URL else "http://localhost:100
 
 def send_telegram_msg(chat_id, text):
     if not TELEGRAM_TOKEN:
+        print("Fehler: kein TELEGRAM_TOKEN")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -22,36 +23,35 @@ def send_telegram_msg(chat_id, text):
         "parse_mode": "Markdown"
     }
     try:
-        requests.post(url, json=payload)
+        r = requests.post(url, json=payload)
+        print("Antwort von Telegram API:", r.status_code, r.text)
     except Exception as e:
-        print(f"Fehler beim Senden: {e}")
-
-# ----------------- ROUTEN -----------------
+        print("Fehler beim Senden an Telegram:", e)
 
 @app.route("/")
 def index():
     return "Spotx Bot Server läuft!"
 
-# Empfänger für Telegram Webhook
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def telegram_webhook():
-    data = request.get_json(force=True)
-    
-    if "message" in data and "text" in data["message"]:
-        text = data["message"]["text"].strip()
-        chat_id = data["message"]["chat"]["id"]
-        
-        if text.startswith("/start") or text.startswith("/login"):
-            login_link = f"{RENDER_URL}/login?user_id={chat_id}"
-            msg = (
-                f"Hallo! Klicke auf den folgenden Link, um dich bei Spotify anzumelden:\n\n"
-                f"🔗 [Bei Spotify einloggen]({login_link})"
-            )
-            send_telegram_msg(chat_id, msg)
-            
+    try:
+        data = request.get_json(force=True, silent=True)
+        if data and "message" in data and "text" in data["message"]:
+            text = data["message"]["text"].strip()
+            chat_id = data["message"]["chat"]["id"]
+
+            if text.startswith("/start") or text.startswith("/login"):
+                login_link = f"{RENDER_URL}/login?user_id={chat_id}"
+                msg = (
+                    f"Hallo! Klicke auf den folgenden Link, um dich bei Spotify anzumelden:\n\n"
+                    f"🔗 [Bei Spotify einloggen]({login_link})"
+                )
+                send_telegram_msg(chat_id, msg)
+    except Exception as e:
+        print("Fehler im Webhook:", e)
+
     return "OK", 200
 
-# Spotify Login Route
 @app.route("/login")
 def login():
     user_id = request.args.get("user_id")
@@ -66,7 +66,6 @@ def login():
     )
     return redirect(auth_url)
 
-# Spotify Callback Route
 @app.route("/callback")
 def callback():
     code = request.args.get("code")
